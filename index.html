@@ -610,11 +610,11 @@
 
                 <div class="field-group">
                     <label>MAL ID</label>
-                    <input id="inp-mal" type="number" placeholder="e.g. 21" min="1">
+                    <input id="inp-mal" type="number" placeholder="e.g. 1735" min="1" value="1735">
                 </div>
                 <div class="field-group">
                     <label>Episode</label>
-                    <input id="inp-ep" type="number" placeholder="e.g. 1" min="1">
+                    <input id="inp-ep" type="number" placeholder="e.g. 250" min="1" value="250">
                 </div>
 
                 <div id="lang-toggle">
@@ -646,11 +646,13 @@
                             <polyline points="9 18 15 12 9 6" />
                         </svg>
                     </button>
-                    <div id="extract-spinner" style="display:none; align-items:center; gap:6px; color:#a78bfa; font-size:12px; font-weight:600; background:rgba(167, 139, 250, 0.12); padding:5px 12px; border-radius:8px; border:1px solid rgba(167, 139, 250, 0.25);">
+                    <div id="extract-spinner"
+                        style="display:none; align-items:center; gap:6px; color:#a78bfa; font-size:12px; font-weight:600; background:rgba(167, 139, 250, 0.12); padding:5px 12px; border-radius:8px; border:1px solid rgba(167, 139, 250, 0.25);">
                         <div class="spin"></div>
                         <span>Extracting...</span>
                     </div>
-                    <div id="prefetch-status" style="display:none; align-items:center; gap:5px; color:#4ade80; font-size:12px; font-weight:600; background:rgba(74, 222, 128, 0.12); padding:5px 12px; border-radius:8px; border:1px solid rgba(74, 222, 128, 0.25);">
+                    <div id="prefetch-status"
+                        style="display:none; align-items:center; gap:5px; color:#4ade80; font-size:12px; font-weight:600; background:rgba(74, 222, 128, 0.12); padding:5px 12px; border-radius:8px; border:1px solid rgba(74, 222, 128, 0.25);">
                         <span id="prefetch-icon">✓</span>
                         <span id="prefetch-status-text">+50 Ep Ready</span>
                     </div>
@@ -700,7 +702,7 @@
             </div>
 
             <video id="videoPlayer" controls autoplay style="display:none;"></video>
-            <iframe id="player-iframe" allow="autoplay; fullscreen" allowfullscreen style="display:none;"></iframe>
+            <iframe id="player-iframe" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen style="display:none;"></iframe>
 
             <div id="autonext-overlay">
                 <div class="an-title">Up next</div>
@@ -718,8 +720,8 @@
 
     <script>
         const FLIXCLOUD_BASE = "https://flixcloud.cc";
-        const LUNA_API = "https://api.lunaranime.ru/api/3rdprovider";
-        const ENC_DEC_API = "https://enc-dec.app/api";
+        const REANIME_FLIX_API = "https://reanime.to/api/flix";
+        const PROXY_WORKER = "https://animegg.ytbro8326.workers.dev/proxy?url=";
 
         let hlsInstance = null;
         let currentLang = 'dub';
@@ -732,32 +734,73 @@
         const COUNTDOWN_S = 10;
 
         const streamCache = new Map();
+        const anilistIdCache = new Map();
         let preFetchAbortToken = 0;
 
         function getProxyUrl(url) {
             if (!url) return '';
-            if (url.startsWith('https://anivexa.onrender.com/proxy')) return url;
-            const cleanUrl = url.split('?')[0].toLowerCase();
-            if (cleanUrl.endsWith('.txt')) {
-                return `https://anivexa.onrender.com/proxy?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(FLIXCLOUD_BASE + '/')}`;
-            }
-            return url;
+            if (url.startsWith('https://animegg.ytbro8326.workers.dev/proxy')) return url;
+            return `${PROXY_WORKER}${encodeURIComponent(url)}`;
         }
 
         async function fetchJsonProxy(url, options = {}) {
+            // 1. Direct fetch (e.g. for ani.zip and GraphQL which support CORS)
+            try {
+                const res = await fetch(url, { ...options, signal: AbortSignal.timeout(6000) });
+                if (res.ok) return await res.json();
+            } catch (e) { }
+
+            // 2. Worker / CORS proxies
             const proxyUrls = [
-                `https://anivexa.onrender.com/proxy?url=${encodeURIComponent(url)}`,
-                `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+                `${PROXY_WORKER}${encodeURIComponent(url)}`,
                 `https://corsproxy.io/?${encodeURIComponent(url)}`,
+                `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
                 `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
             ];
+
             for (const pUrl of proxyUrls) {
                 try {
-                    const res = await fetch(pUrl, options);
+                    const res = await fetch(pUrl, { ...options, signal: AbortSignal.timeout(7000) });
                     if (res.ok) return await res.json();
                 } catch (e) { }
             }
-            throw new Error("Could not fetch JSON via proxies");
+            throw new Error(`Failed to fetch ${url} via proxies`);
+        }
+
+        async function malToAnilistId(malId) {
+            const key = String(malId);
+            if (anilistIdCache.has(key)) {
+                return anilistIdCache.get(key);
+            }
+
+            // 1. Try ani.zip mappings API (CORS enabled)
+            try {
+                const res = await fetchJsonProxy(`https://api.ani.zip/mappings?mal_id=${malId}`);
+                const anilistId = res?.mappings?.anilist_id;
+                if (anilistId) {
+                    anilistIdCache.set(key, parseInt(anilistId, 10));
+                    return parseInt(anilistId, 10);
+                }
+            } catch (e) { }
+
+            // 2. Try AniList GraphQL (CORS enabled)
+            try {
+                const query = `query ($malId: Int) { Media(idMal: $malId, type: ANIME) { id } }`;
+                const res = await fetch("https://graphql.anilist.co", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ query, variables: { malId: parseInt(malId, 10) } })
+                }).then(r => r.json());
+
+                const anilistId = res?.data?.Media?.id;
+                if (anilistId) {
+                    anilistIdCache.set(key, parseInt(anilistId, 10));
+                    return parseInt(anilistId, 10);
+                }
+            } catch (e) { }
+
+            // Fallback: assume same ID
+            return parseInt(malId, 10);
         }
 
         async function getFlixCloudStreams(malId, epNum) {
@@ -769,63 +812,70 @@
             const fetchPromise = (async () => {
                 const streams = [];
 
-                // 1. Fetch entries from LunarAnime
-                const lunaUrl = `${LUNA_API}?anilist=${malId}&episode=${epNum}&autoplay=true`;
-                const lunaRes = await fetchJsonProxy(lunaUrl);
-                const fcEntries = (lunaRes?.data || []).filter(e => (e.player_url || '').includes('flixcloud.cc'));
+                // Step 1: Resolve AniList ID
+                const anilistId = await malToAnilistId(malId);
 
-                for (const entry of fcEntries) {
-                    const lang = (entry.audio || '').toLowerCase().includes('dub') ? 'dub' : 'sub';
-                    const playerUrl = entry.player_url;
+                // Step 2: Fetch FlixCloud servers from ReAnime Flix API
+                const flixUrl = `${REANIME_FLIX_API}/${anilistId}/${epNum}`;
+                let flixData = null;
+                try {
+                    flixData = await fetchJsonProxy(flixUrl);
+                } catch (err) {
+                    console.warn("ReAnime flix fetch error:", err);
+                }
 
-                    try {
-                        // Fetch page content
-                        const pHtml = await fetchJsonProxy(playerUrl);
+                if (flixData?.success && Array.isArray(flixData.servers)) {
+                    for (const s of flixData.servers) {
+                        const embedUrl = s.dataLink;
+                        if (!embedUrl) continue;
 
-                        // Call enc-dec to decode token
-                        const encRes = await fetch(`${ENC_DEC_API}/dec-flixcloud?type=token`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ data: { player_url: playerUrl } })
-                        }).then(r => r.json()).catch(() => null);
+                        const rawType = (s.dataType || '').toLowerCase();
+                        const lang = rawType.includes('dub') ? 'dub' : 'sub';
+                        const srvName = s.serverName || 'HD-1';
 
-                        if (encRes?.result?.stream) {
-                            streams.push({
-                                server: `FlixCloud (${lang.toUpperCase()})`,
-                                url: encRes.result.stream,
-                                type: 'hls',
-                                quality: 'HD',
-                                lang: lang
-                            });
-                        } else {
-                            streams.push({
-                                server: `FlixCloud Embed (${lang.toUpperCase()})`,
-                                url: playerUrl,
-                                type: 'iframe',
-                                quality: 'Embed',
-                                lang: lang
-                            });
-                        }
-                    } catch (e) {
                         streams.push({
-                            server: `FlixCloud Embed (${lang.toUpperCase()})`,
-                            url: playerUrl,
+                            id: s.$id || `${srvName}-${lang}`,
+                            server: `FlixCloud ${srvName} (${lang.toUpperCase()})`,
+                            url: embedUrl,
                             type: 'iframe',
-                            quality: 'Embed',
+                            quality: srvName,
                             lang: lang
                         });
                     }
                 }
 
+                // Fallback: LunarAnime if ReAnime didn't return servers
                 if (streams.length === 0) {
-                    throw new Error(`No FlixCloud streams found for MAL ID ${malId} Ep ${epNum}`);
+                    try {
+                        const lunaUrl = `https://api.lunaranime.ru/api/3rdprovider?anilist=${anilistId}&episode=${epNum}&autoplay=true`;
+                        const lunaRes = await fetchJsonProxy(lunaUrl);
+                        const fcEntries = (lunaRes?.data || []).filter(e => (e.player_url || '').includes('flixcloud.cc'));
+
+                        for (const entry of fcEntries) {
+                            const lang = (entry.audio || '').toLowerCase().includes('dub') ? 'dub' : 'sub';
+                            const srvName = entry.server || 'HD';
+                            streams.push({
+                                id: `luna-${srvName}-${lang}`,
+                                server: `FlixCloud ${srvName} (${lang.toUpperCase()})`,
+                                url: entry.player_url,
+                                type: 'iframe',
+                                quality: srvName,
+                                lang: lang
+                            });
+                        }
+                    } catch (e) { }
+                }
+
+                if (streams.length === 0) {
+                    throw new Error(`No FlixCloud embed streams found for MAL ID ${malId} (AniList ${anilistId}) Ep ${epNum}`);
                 }
 
                 return {
                     status: "success",
                     server: "FlixCloud",
-                    malId: parseInt(malId),
-                    episode: parseInt(epNum),
+                    malId: parseInt(malId, 10),
+                    anilistId: anilistId,
+                    episode: parseInt(epNum, 10),
                     results: {
                         stream_url: streams[0].url,
                         streams: streams
@@ -866,7 +916,7 @@
                         await getFlixCloudStreams(malId, ep);
                         if (myPrefetchToken !== preFetchAbortToken) return;
                     } catch (e) { }
-                    await new Promise(r => setTimeout(r, 350));
+                    await new Promise(r => setTimeout(r, 200));
                 }
                 fetchedCount++;
                 if (statusText && myPrefetchToken === preFetchAbortToken) {
@@ -943,7 +993,7 @@
 
             if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
 
-            if (proxiedUrl.includes('.m3u8') || proxiedUrl.includes('.txt') || (stream.url && (stream.url.includes('.m3u8') || stream.url.includes('.txt')))) {
+            if (proxiedUrl.includes('.m3u8') || (stream.url && stream.url.includes('.m3u8'))) {
                 if (Hls.isSupported()) {
                     hlsInstance = new Hls();
                     hlsInstance.loadSource(proxiedUrl);
@@ -995,8 +1045,9 @@
                 return;
             }
 
-            const qualSet = new Set(["1080p", "720p", "480p", "360p"]);
-            streams.forEach(s => { if (s.quality && s.quality !== 'Embed' && s.quality !== 'Master') qualSet.add(s.quality); });
+            // Quality / Server pills
+            const qualSet = new Set(["HD-1", "HD-2"]);
+            streams.forEach(s => { if (s.quality) qualSet.add(s.quality); });
 
             Array.from(qualSet).forEach(q => {
                 let matchingStream = streams.find(s => s.lang === currentLang && ((s.quality || '').includes(q) || (s.server || '').includes(q)));
@@ -1024,6 +1075,7 @@
                 qRow.appendChild(pill);
             });
 
+            // Sort so preferred language is on top
             const sortedStreams = [...streams].sort((a, b) => {
                 if (a.lang === currentLang && b.lang !== currentLang) return -1;
                 if (a.lang !== currentLang && b.lang === currentLang) return 1;
@@ -1070,14 +1122,14 @@
                         <rect x="2" y="10" width="20" height="4" rx="1" />
                         <rect x="2" y="17" width="20" height="4" rx="1" />
                     </svg>
-                    Servers (${activeRes.trim() ? activeRes.trim() : streams.length + ' Streams'})
+                    Servers (${activeRes.trim() ? activeRes.trim() : streams.length + ' Servers'})
                 `;
             }
         }
 
         function getBestHdStream(streams, preferredLang = 'dub') {
             if (!streams || streams.length === 0) return null;
-            const priority = ["1080p", "720p", "480p", "360p"];
+            const priority = ["HD-1", "HD-2", "HD", "1080p", "720p"];
 
             const prefStreams = streams.filter(s => s.lang === preferredLang);
             if (prefStreams.length > 0) {
@@ -1147,7 +1199,7 @@
                     preExtractNextEpisodes(malId, ep, 50);
                 } else {
                     document.getElementById('sp-error').style.display = 'block';
-                    document.getElementById('sp-error').textContent = `No streams available for MAL ${malId} Ep ${ep}.`;
+                    document.getElementById('sp-error').textContent = `No FlixCloud streams available for MAL ${malId} Ep ${ep}.`;
                 }
             } catch (err) {
                 if (myToken !== _fetchToken) return;
@@ -1253,6 +1305,12 @@
             const params = parseParamsFromUrl();
             if (params) {
                 showPlayer(params.malId, params.epNum, params.lang);
+            } else {
+                const defaultMal = document.getElementById('inp-mal').value.trim();
+                const defaultEp = document.getElementById('inp-ep').value.trim();
+                if (defaultMal && defaultEp) {
+                    showPlayer(defaultMal, defaultEp, currentLang);
+                }
             }
         });
     </script>
