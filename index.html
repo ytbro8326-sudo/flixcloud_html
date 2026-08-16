@@ -803,6 +803,15 @@
             return parseInt(malId, 10);
         }
 
+        function formatEmbedUrl(url, lang) {
+            if (!url) return '';
+            const audioTrack = (lang === 'dub' || lang === 's-dub') ? '2' : '1';
+            const params = `autoPlay=true&skI=false&skO=false&a=${audioTrack}`;
+            let cleanUrl = url.replace(/([?&])(autoPlay|skI|skO|a)=[^&]*/gi, '').replace(/&+/g, '&').replace(/[?&]+$/, '');
+            const sep = cleanUrl.includes('?') ? '&' : '?';
+            return `${cleanUrl}${sep}${params}`;
+        }
+
         async function getFlixCloudStreams(malId, epNum) {
             const cacheKey = `${malId}_${epNum}`;
             if (streamCache.has(cacheKey)) {
@@ -832,11 +841,13 @@
                         const rawType = (s.dataType || '').toLowerCase();
                         const lang = rawType.includes('dub') ? 'dub' : 'sub';
                         const srvName = s.serverName || 'HD-1';
+                        const finalEmbedUrl = formatEmbedUrl(embedUrl, lang);
 
                         streams.push({
                             id: s.$id || `${srvName}-${lang}`,
                             server: `FlixCloud ${srvName} (${lang.toUpperCase()})`,
-                            url: embedUrl,
+                            url: finalEmbedUrl,
+                            rawUrl: embedUrl,
                             type: 'iframe',
                             quality: srvName,
                             lang: lang
@@ -854,10 +865,12 @@
                         for (const entry of fcEntries) {
                             const lang = (entry.audio || '').toLowerCase().includes('dub') ? 'dub' : 'sub';
                             const srvName = entry.server || 'HD';
+                            const finalEmbedUrl = formatEmbedUrl(entry.player_url, lang);
                             streams.push({
                                 id: `luna-${srvName}-${lang}`,
                                 server: `FlixCloud ${srvName} (${lang.toUpperCase()})`,
-                                url: entry.player_url,
+                                url: finalEmbedUrl,
+                                rawUrl: entry.player_url,
                                 type: 'iframe',
                                 quality: srvName,
                                 lang: lang
@@ -980,7 +993,8 @@
             if (stream.type === 'iframe') {
                 video.style.display = 'none';
                 video.pause();
-                iframe.src = stream.url;
+                const embedWithParams = formatEmbedUrl(stream.rawUrl || stream.url, stream.lang || currentLang);
+                iframe.src = embedWithParams;
                 iframe.style.display = 'block';
                 return;
             }
